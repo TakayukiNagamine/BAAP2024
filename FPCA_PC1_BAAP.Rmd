@@ -1,0 +1,1734 @@
+---
+title: "Using Functional PCA for articulatory dynamics: L1 Japanese speakers’ production of English liquids (BAAP2024)"
+author: "Takayuki Nagamine"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+This document outlines functional Principal Component analysis on dynamic changes on the **PC1** scores from the PCA analysis.
+
+# Preliminaries
+## loading packages and machine setting
+```{r message=FALSE}
+library(fdapace)
+library(ggplot2)
+library(tidyverse)
+library(brms)
+library(scales)
+library(grid)
+library(gridExtra)
+library(ggpubr)
+library(ggsci)
+library(emuR)
+library(emmeans)
+theme_set(theme_classic())
+options(mc.cores = parallel::detectCores())
+```
+
+## loading data
+
+```{r}
+# Tongue spline tracking data
+load(file = "data/int.350.rda")
+
+# Participant info
+load(file = "data/par.rda")
+```
+
+## participant info
+
+```{r}
+# select participants that are included in the analysis
+sp <- int.350 %>% 
+  select(speaker)
+
+sp <- merge(sp, par, by.x = "speaker")
+
+# N of speakers by L1
+sp %>% 
+  group_by(L1) %>% 
+  summarise(n = n_distinct(speaker)) %>% 
+  ungroup()
+
+# Country
+sp %>% 
+  group_by(L1, country) %>% 
+  summarise(n = n_distinct(speaker)) %>% 
+  ungroup()
+
+# fluency rating
+sp %>% 
+  mutate(
+    primary_lang = case_when(
+      L1 == "Japanese" ~ "Japanese",
+      TRUE ~ "English"
+    )
+  ) %>% 
+  group_by(primary_lang) %>% 
+  summarise(
+    mean_fluency = mean(fluency),
+    sd_fluency = sd(fluency),
+    mean_use = mean(use),
+    sd_use = sd(use),
+    mean_familiarity = mean(familiarity),
+    sd_familiarity = sd(familiarity)
+  ) %>% 
+  ungroup()
+
+## Japanese data
+sp.jp <- sp %>% 
+  filter(L1 == "Japanese")
+
+## English study
+sp.jp %>% 
+  rename(
+    overseas = `overseas (month: 1wk = 0.25m)`
+  ) %>% 
+  summarise(mean_study = mean(as.numeric(English_study)),
+            sd_study = sd(as.numeric(English_study)),
+            mean_month_overseas = mean(as.numeric(overseas)),
+            sd_month_overseas = sd(as.numeric(overseas)))
+```
+
+## some descriptive statistics
+
+```{r}
+# matching tongue data with participant info
+int.350 <- merge(int.350, par, by.x = "speaker", by.y = "speaker") %>% 
+  select(-number, -L1.y) %>% 
+  rename(
+    L1 = L1.x
+  )
+
+# N of speaker = 43
+int.350 %>% 
+  group_by(L1) %>% 
+  summarise(speaker = n_distinct(speaker),
+            mean_age = mean(age),
+            sd_age = sd(age)) %>% 
+  ungroup()
+
+# N of prompts
+int.350 %>% 
+  group_by(L1, segment, vowel) %>% 
+  summarise(n = n_distinct(exclude_key)) %>% 
+  ungroup()
+
+int.350 %>% 
+  group_by(L1, segment) %>% 
+  summarise(n = n_distinct(exclude_key)) %>% 
+  ungroup()
+```
+
+# analysis 1: principal component analysis
+## running PCA
+
+```{r}
+# PCA: -350ms onset ----------------------------------------------------------------
+## Data Preparation
+int.350 <- int.350 %>% 
+  select(speaker:country)
+
+### Convert data frame into a PCA-friendly format
+int.350.xy <- int.350 %>%
+  group_by(speaker) %>%
+  mutate(
+    X_z = scale(X),
+    Y_z = scale(Y)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-X, -Y) %>%
+  pivot_wider(
+    names_from = point_number,
+    values_from = c(X_z, Y_z)
+  )
+
+### Check 1
+# int.350.xy %>%
+#   filter(speaker == "3wy8us",
+#          prompt == "ram",
+#          repetition == "1") %>% 
+#   group_by(speaker, prompt, repetition, time, interval_350, phone) %>%
+#   summarise() %>% 
+#   ungroup() %>% 
+#   print(n = Inf)
+
+### Check 2
+# int.350.xy %>%
+#   filter(speaker == "2d57ke") %>% 
+#   group_by(speaker, prompt, repetition) %>%
+#   summarise() %>% 
+#   ungroup() %>% 
+#   print(n = Inf)
+
+### Check 3
+# int.350.xy %>% 
+#   group_by(speaker) %>% 
+#   summarise() %>% 
+#   ungroup() %>% 
+#   print(n = Inf)
+
+### check column names
+# colnames(int.350.xy)
+
+### Remove and save meta data 
+int.350.pca <- int.350.xy %>% 
+  dplyr::select(-speaker, -rec_date, -time, -prompt, -L1, -frame_number, -spline_number, -repetition, -segment, -phone, -position, -interval_350, -vowel, -exclude_key, -start_time, -end_time, -total_duration, -proportional_time, -vowel_start, -vowel_start_prop, -acoustic_start, -acoustic_start_prop, -gender, -age, -country)
+# remove the meta data that we don't need for PCA
+
+meta.350 <- int.350.xy %>% 
+  dplyr::select(speaker, rec_date, time, prompt, L1, frame_number, spline_number, repetition, segment, phone, position, interval_350, vowel, exclude_key, start_time, end_time, total_duration, proportional_time, vowel_start, vowel_start_prop, acoustic_start, acoustic_start_prop, gender, age, country)
+# separate and save the meta data for later
+
+### Check if there are any NAs 
+
+table(is.na(int.350.pca))
+# int.350.pca <- drop_na(int.350.pca) # run this only when the table(is.na()) returns TRUE values
+
+### Run PCA on all the liquid tokens
+pca.350 <- princomp(int.350.pca)
+
+summary(pca.350) 
+# Summarise to see how much variation each PCA accounts for
+```
+
+## variation explained by each PC
+
+```{r}
+### Plotting the variance explained (optional)
+var.explained.350 <- pca.350$sdev^2 / sum(pca.350$sdev^2)
+
+# making var_explained as a tibble and add colname
+var.explained.350 <- as_tibble(var.explained.350)
+var.explained.350 <- var.explained.350 %>% 
+  as_tibble() %>% 
+  mutate(
+    PC = row_number()
+  )
+
+# create a plot
+var.explained.350.PC10 <- var.explained.350 %>% 
+  filter(PC < 11) # only plot PC10 or below 
+
+var.plot.350 <- var.explained.350.PC10 %>%
+  ggplot(mapping = aes(x = PC, y = value)) +
+  geom_line() +
+  geom_text(data = subset(var.explained.350.PC10, PC < 5), aes(label = round(value, digits = 5)), nudge_x = 0.8) +
+  geom_label(data = subset(var.explained.350.PC10, PC < 5), aes(label = PC), label.padding = unit(0.40, "lines")) +
+  geom_point(data = subset(var.explained.350.PC10, PC > 5)) +
+  geom_hline(yintercept = 0.05, linetype = 'dotted') +
+  xlab("Principal Component") +
+  ylab("Variance Explained") +
+  ggtitle("Proportion of Variance explained by each PC") +
+  # ylim(0, 0.6) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 18, face = "bold"), 
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        strip.text.x = element_text(size = 15),
+        strip.text.y = element_text(size = 15, angle = 0),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.key.width = unit(3, "cm")
+        # legend.title = element_blank()
+  )
+
+var.plot.350
+# the plot shows that the first 4 PCs account for more than 5% of the variation in the data
+
+ggsave(var.plot.350, filename = "figure/varplot_350ms.png", width = 10, height = 5, dpi = 1000)
+```
+
+## preparing for PCA plot
+
+```{r}
+## Preparing PCA plots
+# Get the results of the PCA which are useful
+pca.number.350 <- pca.350$scores
+
+# Put it into a sensible format as some variables come out weird
+pca.number.350 <- as_tibble(pca.number.350)
+
+# Combine with non-numeric information from earlier
+pca.result.350 <- cbind(meta.350, pca.number.350)
+
+# normalise PCs by speaker for comparison
+pca.result.350 = pca.result.350 %>% 
+  group_by(speaker) %>% 
+  mutate(
+    PC1z = scale(Comp.1),
+    PC2z = scale(Comp.2),
+    PC3z = scale(Comp.3),
+    PC4z = scale(Comp.4)
+  )
+
+## Work out parameters of variation in first 3 PCs
+# Mean values from the output of the PCA
+mean.pca.350 <- tibble::enframe(pca.350$center)
+
+## make subsettable variable
+mean.pca.350 <- mean.pca.350 %>% 
+  mutate(axis = substr(mean.pca.350$name, 1, 1))
+
+## subset data to make into a matrix of x and y values
+X <- subset(mean.pca.350, mean.pca.350$axis == 'X')
+Y <- subset(mean.pca.350, mean.pca.350$axis == 'Y')
+mean.pca.350 <- cbind(X, Y)
+
+## changing colnames
+colnames(mean.pca.350) = c("number1", "mean.x", "axis1", "number2", "mean.y", "axis2")
+
+## get loadings - eigenvectors
+loadings.350 <- as.table(pca.350$loadings)
+
+# PC1 ---------------------------------------------------------------------
+## get loadings for PC1 in a sensible format
+PC1.l.350 <- as.data.frame(loadings.350) %>% 
+  filter(Var2 == "Comp.1")
+
+PC1.l.350 <- PC1.l.350 %>% 
+  mutate(axis = substr(PC1.l.350$Var1, 1, 1))
+
+PC1.l.350.x <- subset(PC1.l.350, PC1.l.350$axis == 'X')
+PC1.l.350.y <- subset(PC1.l.350, PC1.l.350$axis == 'Y')
+
+PC1.l.350 <- cbind(PC1.l.350.x, PC1.l.350.y)
+
+colnames(PC1.l.350) = c("useless", "useless2", "PC1.l.350.x", "useless3", "useless4", "useless5", "PC1.l.350.y", "useless6")
+
+PC1.l.350$useless <- NULL
+PC1.l.350$useless2 <- NULL
+PC1.l.350$useless3 <- NULL
+PC1.l.350$useless4 <- NULL
+PC1.l.350$useless5 <- NULL
+PC1.l.350$useless6 <- NULL
+
+# PC2 ---------------------------------------------------------------------
+## get loadings for PC1 in a sensible format
+PC2.l.350 <- as.data.frame(loadings.350) %>% 
+  filter(Var2 == "Comp.2")
+
+PC2.l.350 <- PC2.l.350 %>% 
+  mutate(axis = substr(PC2.l.350$Var1, 1, 1))
+
+PC2.l.350.x <- subset(PC2.l.350, PC2.l.350$axis == 'X')
+PC2.l.350.y <- subset(PC2.l.350, PC2.l.350$axis == 'Y')
+
+PC2.l.350 <- cbind(PC2.l.350.x, PC2.l.350.y)
+
+colnames(PC2.l.350) = c("useless", "useless2", "PC2.l.350.x", "useless3", "useless4", "useless5", "PC2.l.350.y", "useless6")
+
+PC2.l.350$useless <- NULL
+PC2.l.350$useless2 <- NULL
+PC2.l.350$useless3 <- NULL
+PC2.l.350$useless4 <- NULL
+PC2.l.350$useless5 <- NULL
+PC2.l.350$useless6 <- NULL
+
+# PC3 ---------------------------------------------------------------------
+## get loadings for PC3 in a sensible format
+PC3.l.350 <- as.data.frame(loadings.350) %>% 
+  filter(Var2 == "Comp.3")
+
+PC3.l.350 <- PC3.l.350 %>% 
+  mutate(axis = substr(PC3.l.350$Var1, 1, 1))
+
+PC3.l.350.x <- subset(PC3.l.350, PC3.l.350$axis == 'X')
+PC3.l.350.y <- subset(PC3.l.350, PC3.l.350$axis == 'Y')
+
+PC3.l.350 <- cbind(PC3.l.350.x, PC3.l.350.y)
+
+colnames(PC3.l.350) = c("useless", "useless2", "PC3.l.350.x", "useless3", "useless4", "useless5", "PC3.l.350.y", "useless6")
+
+PC3.l.350$useless <- NULL
+PC3.l.350$useless2 <- NULL
+PC3.l.350$useless3 <- NULL
+PC3.l.350$useless4 <- NULL
+PC3.l.350$useless5 <- NULL
+PC3.l.350$useless6 <- NULL
+
+# PC4 ---------------------------------------------------------------------
+## get loadings for PC4 in a sensible format
+PC4.l.350 <- as.data.frame(loadings.350) %>% 
+  filter(Var2 == "Comp.4")
+
+PC4.l.350 <- PC4.l.350 %>% 
+  mutate(axis = substr(PC4.l.350$Var1, 1, 1))
+
+PC4.l.350.x <- subset(PC4.l.350, PC4.l.350$axis == 'X')
+PC4.l.350.y <- subset(PC4.l.350, PC4.l.350$axis == 'Y')
+
+PC4.l.350 <- cbind(PC4.l.350.x, PC4.l.350.y)
+
+colnames(PC4.l.350) = c("useless", "useless2", "PC4.l.350.x", "useless3", "useless4", "useless5", "PC4.l.350.y", "useless6")
+
+PC4.l.350$useless <- NULL
+PC4.l.350$useless2 <- NULL
+PC4.l.350$useless3 <- NULL
+PC4.l.350$useless4 <- NULL
+PC4.l.350$useless5 <- NULL
+PC4.l.350$useless6 <- NULL
+
+## Plotting the meaning of PCs
+# bind together all of the above
+loadings.350 <- cbind(PC1.l.350, PC2.l.350, PC3.l.350, PC4.l.350)
+
+# get sds of first 4 PCs
+sd.350 <- tibble::enframe(pca.350$sdev)
+sd_PC1.350 <- as.numeric(sd.350[1,2])
+sd_PC2.350 <- as.numeric(sd.350[2,2])
+sd_PC3.350 <- as.numeric(sd.350[3,2])
+sd_PC4.350 <- as.numeric(sd.350[4,2])
+
+# calculate estimated values including sd
+# midpoint model
+estimate.350 <- cbind(mean.pca.350, loadings.350)
+estimate.350$PC1.max.x <- estimate.350$mean.x + sd_PC1.350*estimate.350$PC1.l.350.x
+estimate.350$PC1.min.x <- estimate.350$mean.x - sd_PC1.350*estimate.350$PC1.l.350.x
+estimate.350$PC1.max.y <- estimate.350$mean.y + sd_PC1.350*estimate.350$PC1.l.350.y
+estimate.350$PC1.min.y <- estimate.350$mean.y - sd_PC1.350*estimate.350$PC1.l.350.y
+
+estimate.350$PC2.max.x <- estimate.350$mean.x + sd_PC2.350*estimate.350$PC2.l.350.x
+estimate.350$PC2.min.x <- estimate.350$mean.x - sd_PC2.350*estimate.350$PC2.l.350.x
+estimate.350$PC2.max.y <- estimate.350$mean.y + sd_PC2.350*estimate.350$PC2.l.350.y
+estimate.350$PC2.min.y <- estimate.350$mean.y - sd_PC2.350*estimate.350$PC2.l.350.y
+
+estimate.350$PC3.max.x <- estimate.350$mean.x + sd_PC3.350*estimate.350$PC3.l.350.x
+estimate.350$PC3.min.x <- estimate.350$mean.x - sd_PC3.350*estimate.350$PC3.l.350.x
+estimate.350$PC3.max.y <- estimate.350$mean.y + sd_PC3.350*estimate.350$PC3.l.350.y
+estimate.350$PC3.min.y <- estimate.350$mean.y - sd_PC3.350*estimate.350$PC3.l.350.y
+
+estimate.350$PC4.max.x <- estimate.350$mean.x + sd_PC4.350*estimate.350$PC4.l.350.x
+estimate.350$PC4.min.x <- estimate.350$mean.x - sd_PC4.350*estimate.350$PC4.l.350.x
+estimate.350$PC4.max.y <- estimate.350$mean.y + sd_PC4.350*estimate.350$PC4.l.350.y
+estimate.350$PC4.min.y <- estimate.350$mean.y - sd_PC4.350*estimate.350$PC4.l.350.y
+```
+
+## plotting PCA
+
+```{r fig.height = 6, fig.width = 10}
+# Make figures ------------------------------------------------------------
+# PC1
+PC1.350.plot <- ggplot() +
+  geom_path(data = estimate.350, aes(x = mean.x, y = mean.y), linewidth = 1.5) +
+  geom_path(data = estimate.350, aes(x = PC1.max.x, y = PC1.max.y), linewidth = 1, alpha = 0.5, linetype = "dashed") +
+  geom_path(data = estimate.350, aes(x = PC1.min.x, y = PC1.min.y), linewidth = 1, alpha = 0.5, linetype = "dotted") +
+  geom_point(data = estimate.350, aes(x = PC1.max.x, y = PC1.max.y), shape = 3, size = 3, stroke = 2) +
+  geom_point(data = estimate.350, aes(x = PC1.min.x, y = PC1.min.y), shape = "\u2212", size = 5, stroke = 8) +
+  xlab("X") + ylab("Y") +
+  ggtitle("PC1") +
+  theme_classic() +
+  # ylim(-35, 25) +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, vjust = 1.5, face = "bold"),
+        legend.position = "top",
+        legend.title = element_blank(),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        strip.text.x = element_text(size = 15)
+  )
+
+PC2.350.plot <- ggplot() +
+  geom_path(data = estimate.350, aes(x = mean.x, y = mean.y), linewidth = 1.5) +
+  geom_path(data = estimate.350, aes(x = PC2.max.x, y = PC2.max.y), linewidth = 1, alpha = 0.5, linetype = "dashed") +
+  geom_path(data = estimate.350, aes(x = PC2.min.x, y = PC2.min.y), linewidth = 1, alpha = 0.5, linetype = "dotted") +
+  geom_point(data = estimate.350, aes(x = PC2.max.x, y = PC2.max.y), shape = 3, size = 3, stroke = 2) +
+  geom_point(data = estimate.350, aes(x = PC2.min.x, y = PC2.min.y), shape = "\u2212", size = 5, stroke = 8) +
+  xlab("X") + ylab("Y") +
+  ggtitle("PC2") +
+  theme_classic() +
+  # ylim(-35, 25) +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, vjust = 1.5, face = "bold"),
+        legend.position = "top",
+        legend.title = element_blank(),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        strip.text.x = element_text(size = 15)
+  )
+
+PC3.350.plot <- ggplot() +
+  geom_path(data = estimate.350, aes(x = mean.x, y = mean.y), linewidth = 1.5) +
+  geom_path(data = estimate.350, aes(x = PC3.max.x, y = PC3.max.y), linewidth = 1, alpha = 0.5, linetype = "dashed") +
+  geom_path(data = estimate.350, aes(x = PC3.min.x, y = PC3.min.y), linewidth = 1, alpha = 0.5, linetype = "dotted") +
+  geom_point(data = estimate.350, aes(x = PC3.max.x, y = PC3.max.y), shape = 3, size = 3, stroke = 2) +
+  geom_point(data = estimate.350, aes(x = PC3.min.x, y = PC3.min.y), shape = "\u2212", size = 5, stroke = 8) +
+  xlab("X") + ylab("Y") +
+  ggtitle("PC3") +
+  theme_classic() +
+  # ylim(-35, 25) +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, vjust = 1.5, face = "bold"),
+        legend.position = "top",
+        legend.title = element_blank(),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        strip.text.x = element_text(size = 15)
+  )
+
+PC4.350.plot <- ggplot() +
+  geom_path(data = estimate.350, aes(x = mean.x, y = mean.y), linewidth = 1.5) +
+  geom_path(data = estimate.350, aes(x = PC4.max.x, y = PC4.max.y), linewidth = 1, alpha = 0.5, linetype = "dashed") +
+  geom_path(data = estimate.350, aes(x = PC4.min.x, y = PC4.min.y), linewidth = 1, alpha = 0.5, linetype = "dotted") +
+  geom_point(data = estimate.350, aes(x = PC4.max.x, y = PC4.max.y), shape = 3, size = 3, stroke = 2) +
+  geom_point(data = estimate.350, aes(x = PC4.min.x, y = PC4.min.y), shape = "\u2212", size = 5, stroke = 8) +
+  xlab("X") + ylab("Y") +
+  ggtitle("PC4") +
+  theme_classic() +
+  # ylim(-35, 25) +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, vjust = 1.5, face = "bold"),
+        legend.position = "top",
+        legend.title = element_blank(),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        strip.text.x = element_text(size = 15)
+  )
+
+# Publication plot
+pca_meaning_all.350 <- grid.arrange(PC1.350.plot, PC2.350.plot, PC3.350.plot, PC4.350.plot, ncol = 2)
+```
+
+# analysis 2: functional principal component analysis
+## FPCA using ```fdapace```
+
+```{r}
+# IDs = token column; tVec = time column; yVec = variable column(s)
+input.PC1 <- fdapace::MakeFPCAInputs(IDs = pca.result.350$exclude_key, tVec = pca.result.350$proportional_time, yVec = pca.result.350$PC1z)
+
+# Check if there's any issues with the data
+fdapace::CheckData(input.PC1$Ly, input.PC1$Lt)
+
+# No errors have been returned, so let's now run fPCA on the dynamic PC1 trajectory
+PC1 <- fdapace::FPCA(Ly = input.PC1$Ly, Lt = input.PC1$Lt)
+
+# saving the FPC1 output
+save(PC1, file = "data/PC1_FPCA_BAAP.rda")
+
+# understanding FPC1/PC1
+## eigenvalues
+PC1$lambda
+
+## the cumulative percentage of variance explained by the eigenvalue
+PC1$cumFVE
+## fPC1: 0.5793283
+## fPC2: 0.2456436
+## fPC3: 0.1133626
+## fPC4: 0.048286
+
+
+## PC scores -> each row is 1 token, each column is one PC
+# PC1$xiEst
+
+## plot
+plot(PC1)
+
+## scree plot
+# CreateScreePlot(PC1)
+
+## path plot
+# CreatePathPlot(PC1, xlab = "normalised time", ylab = "PC1 (tongue body movement)")
+
+# the input data to FPCA() (just in case you want to check the specific input data you used)
+# PC1$inputData$Lt
+```
+
+## join PC scores with data + plot
+
+```{r fig.height = 6, fig.width = 10}
+# load the fPCA results for PC1
+load(file = "data/PC1_FPCA_BAAP.rda")
+
+# function: get PC scores + return data frame with PCs for each token
+get_pc_scores <- function(fpcaObj){
+  pcs <- data.frame(fpcaObj$xiEst)
+  token <- names(fpcaObj$inputData$Lt) 
+  df <- cbind(token, pcs)
+  n_pcs <- length(fpcaObj$lambda) # get number of PCs
+  pc_names <- paste0("PC", 1:n_pcs) # create colnames for PCs
+  names(df) <- c("exclude_key", pc_names) # add colnames for token + PCs
+  return(df)
+}
+
+# get PC scores w/ token info
+pc1_df <- get_pc_scores(PC1)
+
+# join PCs (dat) with selected cols from original data frame 
+## store meta info
+meta <- pca.result.350 %>% 
+  select(speaker, L1, prompt, segment, vowel, exclude_key)
+
+## merge the list and meta data - unique(meta) because otherwise there would be lots of duplicates
+dat.PC1 <- left_join(pc1_df, unique(meta), by = "exclude_key")
+
+# PC scores clustering per group
+PC1.scatter <- dat.PC1 %>% 
+  filter(segment %in% c("/l/", "/ɹ/")) %>% 
+  # filter(group %in% c("advanced", "English")) %>% 
+  ggplot2::ggplot() +
+  aes(x = PC1, y = PC2, colour = vowel, shape = vowel) +
+  geom_point(alpha = 0.3, size = 2, show.legend = FALSE) +
+  stat_ellipse(aes(color = vowel, linetype = vowel), level = 0.95, lwd = 1.2) +
+  facet_grid(segment ~ L1) +
+  scale_color_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  # ggtitle("Tongue body movement (PC1) for English and Japanese liquids") +
+  guides(linetype = "none") +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  ) +
+  # ylim(c(-4, 4)) +
+  labs(x = "FPC1", y = "FPC2", colour = "Adjacent vowel")
+
+PC1.scatter
+
+ggsave(PC1.scatter, filename = "figure/PC1_scatter.png", width = 15, height = 10, dpi = 1000)
+```
+
+## tracking dynamic pca
+
+```{r warning=FALSE, message=FALSE, fig.height = 6, fig.width = 10}
+## PC1
+PC1.dyn.350 <- pca.result.350 %>%
+  group_by(speaker, prompt, repetition) %>% 
+  ggplot() +
+  geom_path(aes(x = proportional_time, y = PC1z, colour = vowel, group = rec_date), alpha = 0.03) +
+  # geom_smooth(colour = "black", linewidth = 3, se = FALSE, show.legend = TRUE) +
+  geom_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), linewidth = 2, se = FALSE, show.legend = TRUE) +
+  stat_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), method = "gam", geom = "ribbon", fill = NA, linewidth = 0.5, linetype = 3, show.legend = FALSE) +
+  # facet_wrap(segment ~ vowel, ncol = 2) +
+  facet_grid(segment ~ L1) +
+  # ggtitle("PC1 (Onset: -350 ms)") +
+  geom_hline(yintercept = 0, linetype = 1, linewidth = 0.1) +
+  geom_vline(aes(xintercept = mean(vowel_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(vowel_start_prop), y = 1.3), label = "vowel\nonset", colour = "Black", size = 5) +  
+  geom_vline(aes(xintercept = mean(acoustic_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(acoustic_start_prop), y = 1.3), label = "liquid\nonset", colour = "Black", size = 5) +  
+  scale_color_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 20),
+        strip.text.y = element_text(angle = 0, size = 20)
+  ) +
+  ylim(c(-4, 4)) +
+  labs(x = "Proportional time (%)", y = "PC1 (z-score)", colour = "Adjacent vowel") 
+
+PC1.dyn.350
+
+ggsave(PC1.dyn.350, filename = "figure/dynamic_PC1.jpg", width = 15, height = 10, dpi = 1000)
+```
+
+## plotting FPC scores 
+
+```{r}
+# function: define perturbation function (±Q = ±sd, k = PC number)
+perturbation <- function(fpcaObj, Q, k){
+  Q * sqrt(fpcaObj$lambda[k]) * fpcaObj$phi[,k] + fpcaObj$mu
+}
+
+# function: create perturbation object with mean and ±Q sd as a data frame (for one PC only)
+# can validate against fdapace::GetMeanCurve and fdapace::CreateModeOfVarPlot
+perturbation_object <- function(fpcaObj, Q, k){
+  time <- fpcaObj$workGrid # grid of time values
+  mean <- fpcaObj$mu # mean trajectory
+  Qplus <- perturbation(fpcaObj, Q, k) # +Q sd
+  Qminus <- perturbation(fpcaObj, -Q, k) # -Q sd
+  df <- cbind(time, mean, Qplus, Qminus)
+  colnames(df) <- c("time", "mean", "Qplus", "Qminus")
+  df <- data.frame(df)
+  df$PC <- paste0("PC", k) # add PC colname
+  return(df)
+}
+
+# function: create perturbation data frame with mean and ±Q sd (for all PCs)
+# to do: add ability to pass list of Q values for gradient perturbation function
+get_perturbation <- function(fpcaObj, Q){
+  n_pcs <- length(fpcaObj$lambda)
+  k <- 1:n_pcs
+  df <- lapply(k, perturbation_object, fpcaObj=fpcaObj, Q=Q)
+  df <- dplyr::bind_rows(df) # unnest lists into single df
+  return(df)
+}
+
+# get mean trajectory and ±2 sd for all PCs
+p_PC1 <- get_perturbation(PC1, Q = 2)
+```
+
+## perturbation plot
+
+```{r fig.height = 6, fig.width = 10}
+# Manually calculating proportional time for liquid onset and offset for plotting
+pca.result.350 %>% 
+  ungroup() %>% 
+  summarise(mean_start = mean(acoustic_start_prop),
+            mean_end = mean(vowel_start_prop))
+
+# plot data,  perturbation + PC scores ------------------------------------
+# perturbation plot
+pc1_perturbation <- p_PC1 %>% 
+  filter(PC %in% c("PC1", "PC2")) %>% 
+  mutate(
+    fPC = case_when(
+      PC == "PC1" ~ "fPC1",
+      PC == "PC2" ~ "fPC2"
+    )
+  ) %>% 
+  ggplot2::ggplot() +
+  aes(x = time, y = mean) +
+  geom_path() +
+  geom_point(aes(y = Qplus), shape = 3, size = 3, colour = "red") +
+  geom_point(aes(y = Qminus), shape = 95, size = 5, colour = "blue") +
+  xlab("Proportional Time (%)") + 
+  ylab("PC") +
+  geom_vline(data = pca.result.350, aes(xintercept = mean(acoustic_start_prop)), linetype = 2) +
+  geom_vline(data = pca.result.350, aes(xintercept = mean(vowel_start_prop)), linetype = 2) +
+  facet_wrap(~ fPC, ncol = 2) +
+  scale_color_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 20),
+        strip.text.y = element_text(angle = 0, size = 20)
+  ) +
+  labs(x = "Proportional Time(%)", y = "fPC")
+
+pc1_perturbation
+
+ggsave(pc1_perturbation, filename = "figure/perturbation_PC1.jpg", width = 15, height = 5, dpi = 1000)
+```
+
+## FPCA reconstruction
+### preparation
+
+```{r fig.height = 6, fig.width = 10}
+# mean fPC1 trajectory
+# pc1_mean_curve <- fdapace::GetMeanCurve(Ly = input.PC1$Ly, Lt = input.PC1$Lt, optns = list(plot = TRUE))
+
+pc1_mu_values <- data.frame(PC1$mu) # mean curve values
+pc1_mu_time <- data.frame(PC1$workGrid) # timepoints used for estimating the curve
+pc1_phi <- data.frame(PC1$phi) # eigenfunction at each timepoint: workGrid * nlambda (e.g., 255 = 51 workGrid * 5 lambda)
+pc1_lambda <- data.frame(PC1$lambda) # PC loadings for each PC: currently 5
+
+# create a data frame containing mean curve, time and eigenfunctions assocaited with each PC at each time point
+## add an extra column 'col_number' as a common index across the data frames - useful when merging everything together later on
+### mean curve
+pc1_mu_values <- pc1_mu_values %>% 
+  mutate(
+    col_number = row_number()
+  )
+
+### sampling time points
+pc1_mu_time <- pc1_mu_time %>% 
+  mutate(
+    col_number = row_number()
+  )
+
+### eigenfunction
+pc1_phi <- pc1_phi %>% 
+  mutate(
+    col_number = row_number()
+  )
+
+### pc loadings
+pc1_lambda <- pc1_lambda %>% 
+  mutate(
+    PC = str_c("PC", row_number()),
+    PC = str_c(PC, "lambda", sep = "_")
+  ) %>% 
+  pivot_wider(names_from = "PC", values_from = "PC1.lambda") %>% 
+  slice(rep(1:n(), each = 51)) %>% 
+  mutate(
+    col_number = row_number()
+  )
+  
+
+## merging all data together one by one
+PC1.rec <- left_join(pc1_mu_values, pc1_mu_time, by = "col_number")
+PC1.rec <- left_join(PC1.rec, pc1_phi, by = "col_number")
+PC1.rec <- left_join(PC1.rec, pc1_lambda, by = "col_number")
+
+## tidying up some column names
+PC1.rec <- PC1.rec %>% 
+  select(col_number, PC1.workGrid, PC1.mu, X1, X2, X3, X4, X5, PC1_lambda, PC2_lambda, PC3_lambda, PC4_lambda, PC5_lambda) %>% 
+  rename(
+    mean = PC1.mu,
+    time = PC1.workGrid,
+    PC1_eigen = X1,
+    PC2_eigen = X2,
+    PC3_eigen = X3,
+    PC4_eigen = X4,
+    PC5_eigen = X5
+  )
+
+## plotting the eigenfunctions - this should match with a sub-plot in bottom right created with plot(PC1)
+PC1.rec %>% 
+  ggplot() +
+  # geom_path(aes(x = time, y = mean)) +
+  geom_path(aes(x = time, y = PC1_eigen), colour = "black", linewidth = 1.5) +
+  geom_path(aes(x = time, y = PC2_eigen), colour = "red", linetype = 2, linewidth = 1.5) +
+  geom_path(aes(x = time, y = PC3_eigen), colour = "darkgreen", linetype = 3, linewidth = 1.5) +
+  # geom_path(aes(x = time, y = value, colour = pc)) +
+  geom_hline(yintercept = 0) +
+  labs(x = "time", y = "eigenfunctions", title = "First 3 eigenfunctions")
+
+## check if this matches plot(PC1)
+plot(PC1)
+```
+
+```{r}
+# PC scores -> each row is 1 token, each column is one PC
+# head(PC1$xiEst)
+
+# PC scores have already been added to the main data set
+# head(dat.PC1)
+
+# duplicate each row by 51 times 
+dat.PC1.time <- dat.PC1 %>% 
+  slice(rep(1:n(), each = 51))
+
+# add col_names to merge with the other data frame
+dat.PC1.time <- dat.PC1.time %>% 
+  group_by(exclude_key) %>% 
+  mutate(
+    col_number = row_number()
+  ) %>% 
+  ungroup()
+
+# merge
+dat.PC1.time <- left_join(dat.PC1.time, PC1.rec, by = "col_number")
+```
+
+### visualisation: reconstructed PC1 curves based on FPC1
+
+```{r message=FALSE, warning=FALSE, fig.height = 6, fig.width = 10}
+pca.result.350.BAAP <- pca.result.350 %>% 
+  filter(segment %in% c("/l/", "/ɹ/"))
+
+rec.PC1.fPC1 <- dat.PC1.time %>% 
+  mutate(
+    PC1_reconstruct = PC1 * PC1_eigen + mean,
+    PC2_reconstruct = PC2 * PC2_eigen + mean,
+    PC3_reconstruct = PC3 * PC3_eigen + mean,
+    PC4_reconstruct = PC4 * PC4_eigen + mean,
+    PC5_reconstruct = PC5 * PC5_eigen + mean,
+  ) %>% 
+  mutate(
+    language = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    )
+  ) %>% 
+  # group_by(exclude_key) %>% 
+  filter(segment %in% c("/l/", "/ɹ/")) %>% 
+  ggplot() +
+  geom_path(aes(x = time, y = PC1_reconstruct, group = exclude_key, colour = vowel), alpha = 0.2, show.legend = TRUE) +
+  # geom_smooth(aes(x = time, y = PC1_reconstruct, group = vowel, colour = vowel)) +
+  scale_color_manual(values = c("blue3", "brown2", "darkolivegreen")) +
+  labs(x = "Proportional Time (%)", y = "Reconstructed PC1 scores from FPC1") +
+  labs(title = "FPC1 for PC1") +
+  geom_hline(yintercept = 0, linetype = 1, linewidth = 0.1) +
+  geom_vline(data = pca.result.350.BAAP, aes(xintercept = mean(vowel_start_prop)), linetype = 2, linewidth = 0.5) +
+  # geom_text(data = pca.result.350.BAAP, aes(x = mean(vowel_start_prop)+9, y = 1.5), label = "vowel\nonset", colour = "Black", size = 10) +
+  geom_vline(data = pca.result.350.BAAP, aes(xintercept = mean(acoustic_start_prop)), linetype = 2, linewidth = 0.5) +
+  # geom_text(data = pca.result.350.BAAP, aes(x = mean(acoustic_start_prop)-9, y = 1.5), label = "liquid\nonset", colour = "Black", size = 10) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1))) +
+  facet_grid(segment ~ language) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(2, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        # plot.title = element_text(size = 20, hjust = 0, face = "bold"),
+        plot.title = element_blank(),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  )
+
+ggsave(rec.PC1.fPC1, filename = "figure/reconstructed_PC1_fPC1.jpg", width = 15, height = 10, dpi = 300)
+```
+
+```{r message=FALSE, warning=FALSE, fig.height = 10, fig.width = 20}
+# raw data and reconstructed trajectories side by side
+raw.rec <- ggpubr::ggarrange(PC1.dyn.350, rec.PC1.fPC1, common.legend = TRUE, legend = "bottom")
+
+raw.rec
+
+ggsave(raw.rec, filename = "figure/traj_side.jpg", width = 25, height = 10, dpi = 500)
+```
+
+### visualisation: with Japanese tap
+
+```{r message=FALSE, warning=FALSE, fig.height = 10, fig.width = 20}
+# raw
+## PC1
+PC1.dyn.350.jp <- pca.result.350 %>%
+  # filter(segment %in% c("/l/", "/ɹ/")) %>% 
+  group_by(speaker, prompt, repetition) %>% 
+  ggplot() +
+  geom_path(aes(x = proportional_time, y = PC1z, colour = vowel, group = rec_date), alpha = 0.03) +
+  # geom_smooth(colour = "black", linewidth = 3, se = FALSE, show.legend = TRUE) +
+  geom_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), linewidth = 2, se = FALSE, show.legend = TRUE) +
+  stat_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), method = "gam", geom = "ribbon", fill = NA, linewidth = 0.5, linetype = 3, show.legend = FALSE) +
+  # facet_wrap(segment ~ vowel, ncol = 2) +
+  facet_grid(segment ~ L1) +
+  # ggtitle("PC1 (Onset: -350 ms)") +
+  geom_hline(yintercept = 0, linetype = 1, linewidth = 0.1) +
+  geom_vline(aes(xintercept = mean(vowel_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(vowel_start_prop), y = 1.3), label = "vowel\nonset", colour = "Black", size = 5) +  
+  geom_vline(aes(xintercept = mean(acoustic_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(acoustic_start_prop), y = 1.3), label = "liquid\nonset", colour = "Black", size = 5) +  
+  scale_color_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        plot.title = element_text(size = 30, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  ) +
+  ylim(c(-4, 4)) +
+  labs(x = "Proportional time (%)", y = "PC1 (z-score)", colour = "Adjacent vowel") 
+
+# FPC1 reconstruction
+rec.PC1.fPC1.jp <- dat.PC1.time %>% 
+  mutate(
+    PC1_reconstruct = PC1 * PC1_eigen + mean,
+    PC2_reconstruct = PC2 * PC2_eigen + mean,
+    PC3_reconstruct = PC3 * PC3_eigen + mean,
+    PC4_reconstruct = PC4 * PC4_eigen + mean,
+    PC5_reconstruct = PC5 * PC5_eigen + mean,
+  ) %>% 
+  mutate(
+    language = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    )
+  ) %>% 
+  # group_by(exclude_key) %>% 
+  # filter(segment %in% c("/l/", "/ɹ/")) %>% 
+  ggplot() +
+  geom_path(aes(x = time, y = PC1_reconstruct, group = exclude_key, colour = vowel), alpha = 0.2, show.legend = TRUE) +
+  # geom_smooth(aes(x = time, y = PC1_reconstruct, group = vowel, colour = vowel)) +
+  scale_color_manual(values = c("blue3", "brown2", "darkolivegreen")) +
+  labs(x = "Proportional Time (%)", y = "Reconstructed PC1 scores from FPC1") +
+  labs(title = "FPC1 for PC1") +
+  geom_hline(yintercept = 0, linetype = 1, linewidth = 0.1) +
+  geom_vline(data = pca.result.350, aes(xintercept = mean(vowel_start_prop)), linetype = 2, linewidth = 0.5) +
+  # geom_text(data = pca.result.350.BAAP, aes(x = mean(vowel_start_prop)+9, y = 1.5), label = "vowel\nonset", colour = "Black", size = 10) +
+  geom_vline(data = pca.result.350, aes(xintercept = mean(acoustic_start_prop)), linetype = 2, linewidth = 0.5) +
+  # geom_text(data = pca.result.350.BAAP, aes(x = mean(acoustic_start_prop)-9, y = 1.5), label = "liquid\nonset", colour = "Black", size = 10) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1))) +
+  facet_grid(segment ~ language) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(2, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        # plot.title = element_text(size = 20, hjust = 0, face = "bold"),
+        plot.title = element_blank(),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  )
+
+# raw data and reconstructed trajectories side by side
+raw.rec.jp <- ggpubr::ggarrange(PC1.dyn.350.jp, rec.PC1.fPC1.jp, common.legend = TRUE, legend = "bottom")
+
+raw.rec.jp
+
+ggsave(raw.rec.jp, filename = "figure/traj_side_jp.jpg", width = 25, height = 10, dpi = 500)
+```
+
+# Other visualisation
+## PCA tongue plot
+
+```{r fig.height = 10, fig.width = 6}
+# PC1
+PC1.350.plot.BAAP <- ggplot() +
+  geom_path(data = estimate.350, aes(x = mean.x, y = mean.y), linewidth = 1.5) +
+  geom_path(data = estimate.350, aes(x = PC1.max.x, y = PC1.max.y), linewidth = 1, alpha = 0.5, linetype = "dashed") +
+  geom_path(data = estimate.350, aes(x = PC1.min.x, y = PC1.min.y), linewidth = 1, alpha = 0.5, linetype = "dotted") +
+  geom_point(data = estimate.350, aes(x = PC1.max.x, y = PC1.max.y), shape = 3, size = 3, stroke = 2) +
+  geom_point(data = estimate.350, aes(x = PC1.min.x, y = PC1.min.y), shape = "\u2212", size = 5, stroke = 8) +
+  xlab("X") + ylab("Y") +
+  ggtitle("PC1") +
+  theme_classic() +
+  # ylim(-35, 25) +
+  theme(plot.title = element_text(size = 30, face = "bold"),
+        legend.position = "top",
+        legend.title = element_blank(),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        strip.text.x = element_text(size = 15)
+  )
+
+
+# PC2
+PC2.350.plot.BAAP <- ggplot() +
+  geom_path(data = estimate.350, aes(x = mean.x, y = mean.y), linewidth = 1.5) +
+  geom_path(data = estimate.350, aes(x = PC2.max.x, y = PC2.max.y), linewidth = 1, alpha = 0.5, linetype = "dashed") +
+  geom_path(data = estimate.350, aes(x = PC2.min.x, y = PC2.min.y), linewidth = 1, alpha = 0.5, linetype = "dotted") +
+  geom_point(data = estimate.350, aes(x = PC2.max.x, y = PC2.max.y), shape = 3, size = 3, stroke = 2) +
+  geom_point(data = estimate.350, aes(x = PC2.min.x, y = PC2.min.y), shape = "\u2212", size = 5, stroke = 8) +
+  xlab("X") + ylab("Y") +
+  ggtitle("PC2") +
+  theme_classic() +
+  # ylim(-35, 25) +
+  theme(plot.title = element_text(size = 30, face = "bold"),
+        legend.position = "top",
+        legend.title = element_blank(),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        strip.text.x = element_text(size = 15),
+  )
+
+pc.plot.2 <- ggpubr::ggarrange(PC1.350.plot.BAAP, PC2.350.plot.BAAP, ncol = 1)
+
+pc.plot.2
+
+ggsave(pc.plot.2, filename = "figure/PC1_PC2.jpg", width = 8, height = 12, dpi = 1000, bg = "transparent")
+```
+
+## dynamic PC
+
+```{r message=FALSE, warning=FALSE, fig.height = 6, fig.width = 10}
+## PC1
+PC1.dyn.350 <- pca.result.350 %>%
+  filter(segment %in% c("/l/", "/ɹ/")) %>% 
+  group_by(speaker, prompt, repetition) %>% 
+  ggplot() +
+  geom_path(aes(x = proportional_time, y = PC1z, colour = vowel, group = rec_date), alpha = 0.03) +
+  # geom_smooth(colour = "black", linewidth = 3, se = FALSE, show.legend = TRUE) +
+  geom_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), linewidth = 2, se = FALSE, show.legend = TRUE) +
+  stat_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), method = "gam", geom = "ribbon", fill = NA, linewidth = 0.5, linetype = 3, show.legend = FALSE) +
+  # facet_wrap(segment ~ vowel, ncol = 2) +
+  facet_grid(segment ~ L1) +
+  # ggtitle("PC1 (Onset: -350 ms)") +
+  geom_hline(yintercept = 0, linetype = 1, linewidth = 0.1) +
+  geom_vline(aes(xintercept = mean(vowel_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(vowel_start_prop), y = 1.3), label = "vowel\nonset", colour = "Black", size = 5) +  
+  geom_vline(aes(xintercept = mean(acoustic_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(acoustic_start_prop), y = 1.3), label = "liquid\nonset", colour = "Black", size = 5) +  
+  scale_color_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        plot.title = element_text(size = 30, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  ) +
+  ylim(c(-4, 4)) +
+  labs(x = "Proportional time (%)", y = "PC1 (z-score)", colour = "Adjacent vowel") 
+
+PC1.dyn.350
+
+ggsave(PC1.dyn.350, filename = "figure/dynamic_PC1.jpg", width = 20, height = 10, dpi = 500)
+```
+
+## violin plot for abstract
+
+```{r fig.height = 6, fig.width = 10}
+# e.g. plot fPC1
+PC1.fPC1.violinplot.BAAP <- dat.PC1 %>% 
+  # filter(segment %in% c("/ɹ/", "/l/")) %>% 
+  ggplot2::ggplot()+
+  # aes(x = reorder(speaker, -PC1), y = PC1, fill = L1) +
+  aes(x = vowel, y = PC1, fill = vowel) +
+  geom_violin(show.legend = FALSE, alpha = 0.5) +
+  geom_boxplot(show.legend = FALSE, alpha = 0.7, width = 0.3, fill = "white") +
+  geom_hline(yintercept = 0, linetype = 2) +
+  scale_fill_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  facet_grid(segment ~ L1) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 20),
+        strip.text.y = element_text(angle = 0, size = 20)
+  ) +
+  # ylim(c(-4, 4)) +
+  labs(x = "Adjacent vowels", y = "fPC1")
+
+PC1.fPC1.violinplot.BAAP
+```
+
+## illustrating FPCA: slide 8
+
+```{r message=FALSE, warning=FALSE, fig.height = 6, fig.width = 6}
+## raw data
+dyn.all <- pca.result.350 %>%
+  filter(segment %in% c("/l/", "/ɹ/")) %>% 
+  group_by(speaker, prompt, repetition) %>% 
+  ggplot() +
+  geom_path(aes(x = proportional_time, y = PC1z, colour = vowel, group = rec_date), alpha = 0.03, show.legend = FALSE) +
+  # geom_smooth(colour = "black", linewidth = 3, se = FALSE, show.legend = TRUE) +
+  geom_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), colour = "white", alpha = 0.5, linewidth = 3, se = FALSE, show.legend = FALSE) +
+    geom_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), alpha = 0.5, linewidth = 2, se = FALSE, show.legend = FALSE) +
+  stat_smooth(aes(x = proportional_time, y = PC1z, colour = vowel, group = vowel), method = "gam", geom = "ribbon", fill = NA, linewidth = 0.5, linetype = 3, show.legend = FALSE) +
+  # facet_wrap(segment ~ vowel, ncol = 2) +
+  # facet_grid(segment ~ L1) +
+  # ggtitle("PC1 (Onset: -350 ms)") +
+  geom_hline(yintercept = 0, linetype = 1, linewidth = 0.1) +
+  geom_vline(aes(xintercept = mean(vowel_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(vowel_start_prop), y = 1.3), label = "vowel\nonset", colour = "Black", size = 5) +  
+  geom_vline(aes(xintercept = mean(acoustic_start_prop)), linetype = 2, linewidth = 0.5) + 
+  # geom_text(aes(x = mean(acoustic_start_prop), y = 1.3), label = "liquid\nonset", colour = "Black", size = 5) +  
+  scale_color_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        # axis.title = element_text(size = 20),
+        axis.title = element_blank(),
+        plot.title = element_text(size = 30, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  ) +
+  ylim(c(-4, 4)) +
+  labs(x = "Proportional time (%)", y = "PC1", colour = "Adjacent vowel") 
+
+## FPC1 perturbation
+pc1_perturbation_BAAP <- p_PC1 %>% 
+  filter(PC == "PC1") %>% 
+  mutate(
+    fPC = case_when(
+      PC == "PC1" ~ "fPC1"
+    )
+  ) %>% 
+  ggplot2::ggplot() +
+  aes(x = time, y = mean) +
+  geom_path() +
+  geom_point(aes(y = Qplus), shape = 3, size = 3, colour = "red") +
+  geom_point(aes(y = Qminus), shape = 95, size = 5, colour = "blue") +
+  xlab("Proportional Time (%)") + 
+  ylab("PC") +
+  geom_vline(data = pca.result.350, aes(xintercept = mean(acoustic_start_prop)), linetype = 2) +
+  geom_vline(data = pca.result.350, aes(xintercept = mean(vowel_start_prop)), linetype = 2) +
+  # facet_wrap(~ fPC, ncol = 2) +
+  scale_color_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(1, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 20),
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),
+        strip.text.x = element_text(size = 20),
+        strip.text.y = element_text(angle = 0, size = 20)
+  ) +
+  labs(x = "Proportional Time(%)", y = "PC1 captured by FPC1")
+
+illustration <- ggpubr::ggarrange(dyn.all, pc1_perturbation_BAAP, ncol = 1)
+
+illustration
+
+ggsave(illustration, filename = "figure/FPCA_illustration.jpg", width = 5, height = 5, dpi = 1000)
+```
+
+# analysis 3: Baysian hierarchical regression modelling
+## English L
+### data preparation
+
+```{r message=FALSE, warning=FALSE}
+# subset English /l/ data
+dat.PC1.EN.L <- dat.PC1 %>% 
+  filter(segment == "/l/") %>% 
+  rename(
+    fPC1 = PC1,
+    fPC2 = PC2,
+    fPC3 = PC3,
+    fPC4 = PC4,
+    fPC5 = PC5
+  )
+
+# define the baseline level explicitly
+dat.PC1.EN.L <- dat.PC1.EN.L %>%
+   mutate(
+     vowel = case_when(
+       vowel == "/a/" ~ "A",
+       vowel == "/i/" ~ "I",
+       vowel == "/u/" ~ "U"
+     )
+   ) 
+
+dat.PC1.EN.L$vowel <- factor(dat.PC1.EN.L$vowel, levels = c("I", "A", "U"))
+dat.PC1.EN.L$L1 <- factor(dat.PC1.EN.L$L1, levels = c("English", "Japanese"))
+
+# convert other variables into factor
+dat.PC1.EN.L$speaker <- as.factor(dat.PC1.EN.L$speaker)
+dat.PC1.EN.L$speaker <- droplevels(dat.PC1.EN.L$speaker)
+
+dat.PC1.EN.L$prompt <- as.factor(dat.PC1.EN.L$prompt)
+dat.PC1.EN.L$prompt <- droplevels(dat.PC1.EN.L$prompt)
+levels(dat.PC1.EN.L$prompt)
+```
+
+
+```{r}
+# specify prior
+b1_prior <- c(
+  brms::set_prior("normal(0, 20)", class = "Intercept"),
+  brms::set_prior("normal(0, 100)", class = "b"),
+  brms::set_prior("normal(0, 10)", class = "sd"),
+  brms::set_prior("normal(0, 10)", class = "sigma"),
+  brms::set_prior("lkj(2)", class = "cor"))
+```
+
+
+### full model
+
+```{r include=FALSE}
+# full model (H1: There is an interaction between group and vowel affecting the FPC1 values.)
+PC1.FPC1.L.m1.BAAP <- brm(fPC1 ~ vowel + L1 + L1:vowel + (1 + vowel|speaker) + (1 + L1|prompt), data = dat.PC1.EN.L, prior = b1_prior, family = "gaussian", sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99), save_model = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# summary
+summary(PC1.FPC1.L.m1.BAAP)
+```
+
+### model comparison
+
+```{r include=FALSE}
+# Model without interaction (H2: There is no L1-vowel interactions influencing the FPC1 values.)
+PC1.FPC1.L.m2.BAAP <- brm(fPC1 ~ vowel + L1 + (1 + vowel|speaker) + (1 + L1|prompt), data = dat.PC1.EN.L, prior = b1_prior, family = gaussian, sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99))
+
+# Model without vowel-related terms (H3: Vowel context does not influence the FPC1 values.)
+PC1.FPC1.L.m3.BAAP <- brm(fPC1 ~ L1 + (1|speaker) + (1 + L1|prompt), data = dat.PC1.EN.L, prior = b1_prior, family = gaussian, sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99))
+
+# Model without L1-related terms (H4: L1 difference does not influence the FPC1 values.)
+PC1.FPC1.L.m4.BAAP <- brm(fPC1 ~ vowel + (1 + vowel|speaker) + (1|prompt), data = dat.PC1.EN.L, prior = b1_prior, family = gaussian, sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99))
+```
+
+```{r}
+# summary
+PC1.FPC1.L.m2.BAAP
+
+PC1.FPC1.L.m3.BAAP
+
+PC1.FPC1.L.m4.BAAP
+```
+
+
+```{r message=FALSE, warning=FALSE}
+# Model comparison using Bayes Factor: Interaction
+comparison.PC1.FPC1.L.BAAP.m1.m2 <- bayestestR::bayesfactor_models(PC1.FPC1.L.m1.BAAP, PC1.FPC1.L.m2.BAAP, denominator = PC1.FPC1.L.m1.BAAP) # denominator: the model against which comparison is performed
+
+comparison.PC1.FPC1.L.BAAP.m1.m2
+
+# plot
+plot(comparison.PC1.FPC1.L.BAAP.m1.m2, n_pies = "one", value = "BF")
+
+# Model comparison using Bayes Factor: Fixed effects
+comparison.fixed.effect.PC1.FPC1.L.BAAP <- bayestestR::bayesfactor_models(PC1.FPC1.L.m2.BAAP, PC1.FPC1.L.m3.BAAP, PC1.FPC1.L.m4.BAAP, denominator = PC1.FPC1.L.m2.BAAP)
+
+comparison.fixed.effect.PC1.FPC1.L.BAAP
+
+# plot
+plot(comparison.fixed.effect.PC1.FPC1.L.BAAP, n_pies = "one", value = "BF")
+```
+
+### saving model for future analysis
+
+```{r}
+# save models for future analysis
+save(PC1.FPC1.L.m1.BAAP, file = "model/PC1.FPC1.L.m1.BAAP.rda")
+save(PC1.FPC1.L.m2.BAAP, file = "model/PC1.FPC1.L.m2.BAAP.rda")
+save(PC1.FPC1.L.m3.BAAP, file = "model/PC1.FPC1.L.m3.BAAP.rda")
+save(PC1.FPC1.L.m4.BAAP, file = "model/PC1.FPC1.L.m4.BAAP.rda")
+```
+
+
+### visualising model
+
+```{r message=FALSE, warning=FALSE, fig.height = 6, fig.width = 10}
+load(file = "model/PC1.FPC1.L.m1.BAAP.rda")
+
+# obtain posterior draws (sampled values)
+post_data_L_PC1_FPC1_BAAP <- PC1.FPC1.L.m1.BAAP %>% 
+  emmeans::emmeans(~ L1*vowel, epred = TRUE) %>% 
+  tidybayes::gather_emmeans_draws()
+
+# obtain highest density interval
+post_data_L_PC1_FPC1_BAAP_hdi <- post_data_L_PC1_FPC1_BAAP %>% 
+  tidybayes::median_hdi() %>% 
+  mutate(
+    vowel = case_when(
+      vowel == "A" ~ "/a/",
+      vowel == "I" ~ "/i/",
+      vowel == "U" ~ "/u/"
+    ),
+    L1 = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    ))
+
+# renaming vowel labels
+post_data_L_PC1_FPC1_BAAP <- post_data_L_PC1_FPC1_BAAP %>% 
+  mutate(
+    vowel = case_when(
+      vowel == "A" ~ "/a/",
+      vowel == "I" ~ "/i/",
+      vowel == "U" ~ "/u/"
+    ),
+    L1 = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    ))
+
+# plotting posterior distribution
+post_data_L_PC1_FPC1_BAAP_plot <- ggplot() +
+  geom_point(data = post_data_L_PC1_FPC1_BAAP_hdi, aes(x = vowel, y = .value, colour = vowel, shape = vowel), size = 6, stroke = 2, show.legend = FALSE) +
+  geom_errorbar(data = post_data_L_PC1_FPC1_BAAP_hdi, aes(x = vowel, y = .value, ymin = .lower, ymax = .upper), size = 2, width = 0.8, show.legend = FALSE) +
+  ggbeeswarm::geom_quasirandom(data = post_data_L_PC1_FPC1_BAAP, aes(x = vowel, y = .value, colour = vowel), alpha = 0.008, size = 0.01, width = 0.3, dodge.width = 0.3, show.legend = FALSE) +
+  geom_hline(yintercept = 0, size = 0.5, linetype = 2) +
+  facet_wrap(~ factor(L1, levels = c("L1 English", "L1 Japanese"))) +
+  scale_colour_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  scale_y_continuous(limits = c(-20, 20)) +
+  theme_classic() +
+   theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(2, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text.x = element_text(size = 30),
+        # axis.title.x = element_text(size = 20),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(size = 30, hjust = 0, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  ) +
+  labs(x = "Vowel", y = "FPC1") +
+  labs(title = "/l/: FPC1 for PC1")
+
+post_data_L_PC1_FPC1_BAAP_plot
+```
+
+### model details
+
+### quantifying vowel context contrast using `emmeans`
+
+```{r}
+# quantifying contrasts
+## get the adjusted means
+PC1.FPC1.L.m1.BAAP.em <- emmeans::emmeans(PC1.FPC1.L.m1.BAAP,  ~ vowel|L1)
+PC1.FPC1.L.m1.BAAP.em
+
+## get all possible contrasts
+PC1.FPC1.L.m1.BAAP.cont <- emmeans::contrast(PC1.FPC1.L.m1.BAAP.em, "tukey")
+PC1.FPC1.L.m1.BAAP.cont
+
+## get the posterior draws from the contrasts
+PC1_FPC1_L_cont_BAAP_posterior <- tidybayes::gather_emmeans_draws(PC1.FPC1.L.m1.BAAP.cont) %>% 
+  mutate(
+    L1 = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    )
+  )
+
+# calculating probability of direction 
+## L1 English
+EngIA_L_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - A"] > 0)) / length(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - A"]) # EngIA_R: positive
+
+EngIU_L_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - U"] > 0)) / length(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - U"]) # EngIU_R: positive
+
+EngAU_L_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "A - U"] < 0)) / length(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "A - U"]) # EngAU_R: negative
+
+## L1 Japanese
+JapIA_L_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - A"] > 0)) / length(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - A"]) # JapIA_R: positive
+
+JapIU_L_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - U"] > 0)) / length(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "I - U"]) # JapIU_R: positive
+
+JapAU_L_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "A - U"] < 0)) / length(PC1_FPC1_L_cont_BAAP_posterior$.value[PC1_FPC1_L_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_L_cont_BAAP_posterior$contrast == "A - U"]) # JapAU_R: negative
+
+### contrast probability of direction merged together
+L_PC1_FPC1_contrast_BAAP <- c(EngIA_L_PC1_FPC1_BAAP_pd, EngIU_L_PC1_FPC1_BAAP_pd, EngAU_L_PC1_FPC1_BAAP_pd, JapIA_L_PC1_FPC1_BAAP_pd, JapIU_L_PC1_FPC1_BAAP_pd, JapAU_L_PC1_FPC1_BAAP_pd)
+
+### merge contrast pd with hdi/median
+L_PC1_FPC1_contrast_BAAP <- data.frame(PC1.FPC1.L.m1.BAAP.cont, L_PC1_FPC1_contrast_BAAP) %>% rename(
+  PD = L_PC1_FPC1_contrast_BAAP
+)
+
+### results
+L_PC1_FPC1_contrast_BAAP %>% 
+  mutate(across(where(is.numeric), ~ round(., digits = 2))) %>% 
+  mutate(
+    contrast = factor(contrast, levels = c("A - U", "I - U", "I - A"))
+  ) %>% 
+  arrange(L1, contrast)
+```
+
+### plotting vowel contrast
+
+```{r message=FALSE, warning=FALSE, fig.height = 6, fig.width = 10}
+## plot
+PC1_FPC1_L_cont_posterior_BAAP_plot <- PC1_FPC1_L_cont_BAAP_posterior %>% 
+  ggplot(aes(y = contrast, x = .value)) +
+  # tidybayes::stat_halfeye(point_interval = "median_hdi", aes(fill = after_stat(level)), .width = c(.66, .95, .99)) +
+  tidybayes::stat_slab(aes(fill = after_stat(level), slab_alpha = 0.4), point_interval = "median_hdi", .width = c(.89, .95, .99)) +
+  tidybayes::stat_pointinterval(point_interval = "median_hdi", .width = c(.89, .95, .99)) +
+  # scale_fill_brewer(na.translate = FALSE) +
+  scale_fill_manual(values = c("darkolivegreen", "blue4",  "brown4"), na.translate = FALSE) +
+  scale_x_continuous(limits = c(-20, 20)) +
+  facet_wrap(~ L1) +
+  geom_vline(xintercept = 0, lty = 2) +
+  theme_classic() +
+  guides(fill = guide_legend(override.aes = list(alpha = 0.4), title = "HDI")) +
+  labs(x = "difference", title = "/l/: PC1/FPC1 contrast") +
+  theme(legend.text = element_text(size = 30),
+        # legend.key.size = unit(2, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.text.y = element_text(size = 25),
+        # axis.title = element_text(size = 20),
+        axis.title = element_blank(),
+        plot.title = element_text(size = 30, hjust = 0, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30))
+
+PC1_FPC1_L_cont_posterior_BAAP_plot
+```
+
+### slide plot
+
+```{r message=FALSE, warning=FALSE, fig.height = 10, fig.width = 10}
+L.BAAP <- ggarrange(post_data_L_PC1_FPC1_BAAP_plot, PC1_FPC1_L_cont_posterior_BAAP_plot, common.legend = FALSE, legend = "bottom", ncol = 1) 
+
+L.BAAP
+
+## saving plot
+ggsave(L.BAAP, filename = "figure/PC1_FPC1_L.png", width = 8, height = 10, dpi = 1000)
+```
+
+## English R
+### data preparation
+
+```{r message=FALSE, warning=FALSE}
+# subset English /ɹ/ data
+dat.PC1.EN.R <- dat.PC1 %>% 
+  filter(segment == "/ɹ/") %>% 
+  rename(
+    fPC1 = PC1,
+    fPC2 = PC2,
+    fPC3 = PC3,
+    fPC4 = PC4,
+    fPC5 = PC5
+  )
+
+# define the baseline level explicitly
+dat.PC1.EN.R <- dat.PC1.EN.R %>%
+   mutate(
+     vowel = case_when(
+       vowel == "/a/" ~ "A",
+       vowel == "/i/" ~ "I",
+       vowel == "/u/" ~ "U"
+     )
+   ) 
+
+dat.PC1.EN.R$vowel <- factor(dat.PC1.EN.R$vowel, levels = c("I", "A", "U"))
+dat.PC1.EN.R$L1 <- factor(dat.PC1.EN.R$L1, levels = c("English", "Japanese"))
+
+# convert other variables into factor
+dat.PC1.EN.R$speaker <- as.factor(dat.PC1.EN.R$speaker)
+dat.PC1.EN.R$speaker <- droplevels(dat.PC1.EN.R$speaker)
+levels(dat.PC1.EN.R$speaker)
+
+dat.PC1.EN.R$prompt <- as.factor(dat.PC1.EN.R$prompt)
+dat.PC1.EN.R$prompt <- droplevels(dat.PC1.EN.R$prompt)
+levels(dat.PC1.EN.R$prompt)
+```
+
+### full model
+
+```{r include=FALSE}
+# full model (H1: There is an interaction between group and vowel affecting the FPC1 values.)
+PC1.FPC1.R.m1.BAAP <- brm(fPC1 ~ vowel + L1 + L1:vowel + (1 + vowel|speaker) + (1 + L1|prompt), data = dat.PC1.EN.R, prior = b1_prior, family = "gaussian", sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99), save_model = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# summary
+summary(PC1.FPC1.R.m1.BAAP)
+```
+
+### model comparison
+
+```{r include=FALSE}
+# Model without interaction (H2: There is no L1-vowel interactions influencing the FPC1 values.)
+PC1.FPC1.R.m2.BAAP <- brm(fPC1 ~ vowel + L1 + (1 + vowel|speaker) + (1 + L1|prompt), data = dat.PC1.EN.R, prior = b1_prior, family = gaussian, sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99))
+
+# Model without vowel-related terms (H3: Vowel context does not influence the FPC1 values.)
+PC1.FPC1.R.m3.BAAP <- brm(fPC1 ~ L1 + (1|speaker) + (1 + L1|prompt), data = dat.PC1.EN.R, prior = b1_prior, family = gaussian, sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99))
+
+# Model without L1-related terms (H4: L1 difference does not influence the FPC1 values.)
+PC1.FPC1.R.m4.BAAP <- brm(fPC1 ~ vowel + (1 + vowel|speaker) + (1|prompt), data = dat.PC1.EN.R, prior = b1_prior, family = gaussian, sample_prior = "yes", save_pars = save_pars(all = TRUE), iter = 12000, warmup = 2000, chains = 4, control = list(adapt_delta = 0.99))
+```
+
+```{r message=FALSE, warning=FALSE}
+# summary
+PC1.FPC1.R.m2.BAAP
+
+PC1.FPC1.R.m3.BAAP
+
+PC1.FPC1.R.m4.BAAP
+```
+
+
+```{r message=FALSE, warning=FALSE}
+# Model comparison using Bayes Factor: Interaction
+comparison.PC1.FPC1.R.m1.m2.BAAP <- bayestestR::bayesfactor_models(PC1.FPC1.R.m1.BAAP, PC1.FPC1.R.m2.BAAP, denominator = PC1.FPC1.R.m1.BAAP) # denominator: the model against which comparison is performed
+
+comparison.PC1.FPC1.R.m1.m2.BAAP
+
+# plot
+plot(comparison.PC1.FPC1.R.m1.m2.BAAP, n_pies = "one", value = "BF")
+
+# Model comparison using Bayes Factor: Fixed effects
+comparison.fixed.effect.PC1.FPC1.R.BAAP <- bayestestR::bayesfactor_models(PC1.FPC1.R.m2.BAAP, PC1.FPC1.R.m3.BAAP, PC1.FPC1.R.m4.BAAP, denominator = PC1.FPC1.R.m2.BAAP)
+
+comparison.fixed.effect.PC1.FPC1.R.BAAP
+
+# plot
+plot(comparison.fixed.effect.PC1.FPC1.R.BAAP, n_pies = "one", value = "BF")
+```
+
+### saving model for future analysis
+
+```{r}
+# save models for future analysis
+save(PC1.FPC1.R.m1.BAAP, file = "model/PC1.FPC1.R.m1.BAAP.rda")
+save(PC1.FPC1.R.m2.BAAP, file = "model/PC1.FPC1.R.m2.BAAP.rda")
+save(PC1.FPC1.R.m3.BAAP, file = "model/PC1.FPC1.R.m3.BAAP.rda")
+save(PC1.FPC1.R.m4.BAAP, file = "model/PC1.FPC1.R.m4.BAAP.rda")
+```
+
+
+### visualising model
+
+```{r message=FALSE, warning=FALSE, fig.height = 6, fig.width = 10}
+# obtain posterior draws (sampled values)
+load(file = "model/PC1.FPC1.R.m1.BAAP.rda")
+
+post_data_R_PC1_FPC1_BAAP <- PC1.FPC1.R.m1.BAAP %>% 
+  emmeans::emmeans(~ L1*vowel, epred = TRUE) %>% 
+  tidybayes::gather_emmeans_draws()
+
+# obtain highest density interval
+post_data_R_PC1_FPC1_BAAP_hdi <- post_data_R_PC1_FPC1_BAAP %>% 
+  tidybayes::median_hdi() %>% 
+  mutate(
+    vowel = case_when(
+      vowel == "A" ~ "/a/",
+      vowel == "I" ~ "/i/",
+      vowel == "U" ~ "/u/"
+    ),
+    L1 = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    ))
+
+# renaming vowel labels
+post_data_R_PC1_FPC1_BAAP <- post_data_R_PC1_FPC1_BAAP %>% 
+  mutate(
+    vowel = case_when(
+      vowel == "A" ~ "/a/",
+      vowel == "I" ~ "/i/",
+      vowel == "U" ~ "/u/"
+    ),
+    L1 = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    ))
+
+# plotting posterior distribution
+post_data_R_PC1_FPC1_BAAP_plot <- ggplot() +
+  geom_point(data = post_data_R_PC1_FPC1_BAAP_hdi, aes(x = vowel, y = .value, colour = vowel, shape = vowel), size = 6, stroke = 2, show.legend = FALSE) +
+  geom_errorbar(data = post_data_R_PC1_FPC1_BAAP_hdi, aes(x = vowel, y = .value, ymin = .lower, ymax = .upper), size = 2, width = 0.8, show.legend = FALSE) +
+  ggbeeswarm::geom_quasirandom(data = post_data_R_PC1_FPC1_BAAP, aes(x = vowel, y = .value, colour = vowel), alpha = 0.008, size = 0.01, width = 0.3, dodge.width = 0.3, show.legend = FALSE) +
+  geom_hline(yintercept = 0, size = 0.5, linetype = 2) +
+  facet_wrap(~ factor(L1, levels = c("L1 English", "L1 Japanese"))) +
+  scale_colour_manual(values = c("blue4", "brown4", "darkolivegreen")) +
+  scale_y_continuous(limits = c(-20, 20)) +
+  theme_classic() +
+  theme(legend.text = element_text(size = 30),
+        legend.key.size = unit(2, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text.x = element_text(size = 30),
+        # axis.title.x = element_text(size = 20),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 20),
+        plot.title = element_text(size = 30, hjust = 0, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30)
+  ) +
+  labs(x = "Vowel", y = "FPC1") +
+  labs(title = "/ɹ/: FPC1 for PC1")
+
+post_data_R_PC1_FPC1_BAAP_plot
+```
+
+### model details with probability of direction
+
+```{r}
+# calculate proportion of posterior distribution away from zero
+EngI_R_PC1_FPC1_BAAP_pd <- length(which(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 English" & post_data_R_PC1_FPC1_BAAP$vowel == "/i/"] > 0)) / length(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 English" & post_data_R_PC1_FPC1_BAAP$vowel == "/i/"]) # EngI_R: positive
+
+EngA_R_PC1_FPC1_BAAP_pd <- length(which(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 English" & post_data_R_PC1_FPC1_BAAP$vowel == "/a/"] < 0)) / length(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 English" & post_data_R_PC1_FPC1_BAAP$vowel == "/a/"]) # EngA_R: negative
+
+EngU_R_PC1_FPC1_BAAP_pd <- length(which(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 English" & post_data_R_PC1_FPC1_BAAP$vowel == "/u/"] < 0)) / length(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 English" & post_data_R_PC1_FPC1_BAAP$vowel == "/u/"]) # EngU_R: negative
+
+JapI_R_PC1_FPC1_BAAP_pd <- length(which(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 Japanese" & post_data_R_PC1_FPC1_BAAP$vowel == "/i/"] > 0)) / length(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 Japanese" & post_data_R_PC1_FPC1_BAAP$vowel == "/i/"]) # JapI_R: positive
+
+JapA_R_PC1_FPC1_BAAP_pd <- length(which(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 Japanese" & post_data_R_PC1_FPC1_BAAP$vowel == "/a/"] < 0)) / length(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 Japanese" & post_data_R_PC1_FPC1_BAAP$vowel == "/a/"]) # JapA_R: negative
+
+JapU_R_PC1_FPC1_BAAP_pd <- length(which(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 Japanese" & post_data_R_PC1_FPC1_BAAP$vowel == "/u/"] < 0)) / length(post_data_R_PC1_FPC1_BAAP$.value[post_data_R_PC1_FPC1_BAAP$L1 == "L1 Japanese" & post_data_R_PC1_FPC1_BAAP$vowel == "/u/"]) # JapU_R: negative
+
+# probability data nerged together
+R_PC1_FPC1_BAAP_pd <- c(EngI_R_PC1_FPC1_BAAP_pd, EngA_R_PC1_FPC1_BAAP_pd, EngU_R_PC1_FPC1_BAAP_pd, JapI_R_PC1_FPC1_BAAP_pd, JapA_R_PC1_FPC1_BAAP_pd, JapU_R_PC1_FPC1_BAAP_pd)
+
+R_PC1_FPC1_pd_BAAP_hdi <- data.frame(post_data_R_PC1_FPC1_BAAP_hdi, R_PC1_FPC1_BAAP_pd)
+
+R_PC1_FPC1_pd_BAAP_hdi
+```
+
+
+### quantifying vowel context contrast using `emmeans`
+
+```{r}
+# quantifying contrasts
+## get the adjusted means
+PC1.FPC1.R.m1.BAAP.em <- emmeans::emmeans(PC1.FPC1.R.m1.BAAP,  ~ vowel|L1)
+PC1.FPC1.R.m1.BAAP.em
+
+## get all possible contrasts
+PC1.FPC1.R.m1.BAAP.cont <- emmeans::contrast(PC1.FPC1.R.m1.BAAP.em, "tukey")
+PC1.FPC1.R.m1.BAAP.cont
+
+## get the posterior draws from the contrasts
+PC1_FPC1_R_cont_BAAP_posterior <- tidybayes::gather_emmeans_draws(PC1.FPC1.R.m1.BAAP.cont) %>% 
+  mutate(
+    L1 = case_when(
+      L1 == "English" ~ "L1 English",
+      L1 == "Japanese" ~ "L1 Japanese"
+    )
+  )
+
+# calculating probability of direction 
+## L1 English
+EngIA_R_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - A"] > 0)) / length(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - A"]) # EngIA_R: positive
+
+EngIU_R_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - U"] > 0)) / length(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - U"]) # EngIU_R: positive
+
+EngAU_R_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "A - U"] > 0)) / length(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 English" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "A - U"]) # EngAU_R: positive
+
+## L1 Japanese
+JapIA_R_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - A"] > 0)) / length(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - A"]) # JapIA_R: positive
+
+JapIU_R_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - U"] > 0)) / length(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "I - U"]) # JapIU_R: positive
+
+JapAU_R_PC1_FPC1_BAAP_pd <- length(which(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "A - U"] < 0)) / length(PC1_FPC1_R_cont_BAAP_posterior$.value[PC1_FPC1_R_cont_BAAP_posterior$L1 == "L1 Japanese" & PC1_FPC1_R_cont_BAAP_posterior$contrast == "A - U"]) # JapAU_R: negative
+
+### contrast probability of direction merged together
+R_PC1_FPC1_contrast_BAAP <- c(EngIA_R_PC1_FPC1_BAAP_pd, EngIU_R_PC1_FPC1_BAAP_pd, EngAU_R_PC1_FPC1_BAAP_pd, JapIA_R_PC1_FPC1_BAAP_pd, JapIU_R_PC1_FPC1_BAAP_pd, JapAU_R_PC1_FPC1_BAAP_pd)
+
+### merge contrast pd with hdi/median
+R_PC1_FPC1_contrast_BAAP <- data.frame(PC1.FPC1.R.m1.BAAP.cont, R_PC1_FPC1_contrast_BAAP) %>% rename(
+  PD = R_PC1_FPC1_contrast_BAAP
+)
+
+### results
+R_PC1_FPC1_contrast_BAAP %>% 
+  mutate(across(where(is.numeric), ~ round(., digits = 2))) %>% 
+  mutate(
+    contrast = factor(contrast, levels = c("A - U", "I - U", "I - A"))
+  ) %>% 
+  arrange(L1, contrast)
+```
+
+### ploting vowel contrast
+
+```{r message=FALSE, warning=FALSE, fig.height = 6, fig.width = 10}
+## plot
+PC1_FPC1_R_cont_posterior_BAAP_plot <- PC1_FPC1_R_cont_BAAP_posterior %>% 
+  ggplot(aes(y = contrast, x = .value)) +
+  # tidybayes::stat_halfeye(point_interval = "median_hdi", aes(fill = after_stat(level)), .width = c(.66, .95, .99)) +
+  tidybayes::stat_slab(aes(fill = after_stat(level), slab_alpha = 0.4), point_interval = "median_hdi", .width = c(.89, .95, .99)) +
+  tidybayes::stat_pointinterval(point_interval = "median_hdi", .width = c(.89, .95, .99)) +
+  # scale_fill_brewer(na.translate = FALSE) +
+  scale_fill_manual(values = c("darkolivegreen", "blue4",  "brown4"), na.translate = FALSE) +
+  scale_x_continuous(limits = c(-20, 20)) +
+  facet_wrap(~ L1) +
+  geom_vline(xintercept = 0, lty = 2) +
+  theme_classic() +
+  guides(fill = guide_legend(override.aes = list(alpha = 0.4), title = "HDI")) +
+  labs(x = "difference", title = "/ɹ/: PC1/FPC1 difference") +
+  theme(legend.text = element_text(size = 30),
+        # legend.key.size = unit(2, 'cm'),
+        legend.position = "bottom",
+        legend.title = element_text(size = 30),
+        axis.text = element_text(size = 15),
+        axis.text.y = element_text(size = 25),
+        # axis.title = element_text(size = 20),
+        axis.title = element_blank(),
+        plot.title = element_text(size = 30, hjust = 0, face = "bold"),
+        strip.text.x = element_text(size = 30),
+        strip.text.y = element_text(angle = 0, size = 30))
+
+PC1_FPC1_R_cont_posterior_BAAP_plot
+```
+
+### slide plot
+
+```{r message=FALSE, warning=FALSE, fig.height = 10, fig.width = 10}
+R.BAAP <- ggarrange(post_data_R_PC1_FPC1_BAAP_plot, PC1_FPC1_R_cont_posterior_BAAP_plot, common.legend = FALSE, legend = "bottom", ncol = 1) 
+
+R.BAAP
+
+## saving plot
+ggsave(R.BAAP, filename = "figure/PC1_FPC1_R.png", width = 8, height = 10, dpi = 1000)
+```
+
+
+
+# session info
+
+```{r}
+sessionInfo()
+```
